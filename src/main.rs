@@ -46,6 +46,7 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     // Process pages in parallel
     let total_downloaded = Arc::new(Mutex::new(0));
+    let total_size_bytes = Arc::new(Mutex::new(0u64));
 
     pages.par_iter().for_each(|page_num| {
         let current_url = if base_url.contains("?") {
@@ -61,7 +62,7 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
                 Ok(html_content) => {
                     let document = Html::parse_document(&html_content);
 
-                    match scrape_page_parallel(&document, &client, &dir_name) {
+                    match scrape_page_parallel(&document, &client, &dir_name, &total_size_bytes) {
                         Ok(page_downloads) => {
                             if page_downloads > 0 {
                                 println!(
@@ -82,7 +83,9 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let final_total = *total_downloaded.lock().unwrap();
+    let final_size_bytes = *total_size_bytes.lock().unwrap();
     println!("Total torrents downloaded: {}", final_total);
+    println!("total batch size: {}", format_size(final_size_bytes));
     Ok(())
 }
 
@@ -146,18 +149,21 @@ fn scrape_page_parallel(
     document: &Html,
     client: &Arc<Client>,
     dir_name: &str,
+    total_size_bytes: &Arc<Mutex<u64>>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let row_selector = Selector::parse("table tr, tbody tr").unwrap();
     let title_selector = Selector::parse("td:nth-child(2) a[title]:not(.comments)").unwrap();
     let link_selector = Selector::parse("td:nth-child(3) a[href^='/download/']").unwrap();
+    let size_selector = Selector::parse("td:nth-child(4)").unwrap();
 
     // Collect all torrents from the page first
     let mut torrents = Vec::new();
 
     for row in document.select(&row_selector) {
-        if let (Some(title_elem), Some(link_elem)) = (
+        if let (Some(title_elem), Some(link_elem), Some(size_elem)) = (
             row.select(&title_selector).next(),
             row.select(&link_selector).next(),
+            row.select(&size_selector).next(),
         ) {
             let title = title_elem
                 .value()
@@ -165,9 +171,17 @@ fn scrape_page_parallel(
                 .unwrap_or("Unknown")
                 .to_string();
             let download_link = link_elem.value().attr("href").unwrap_or("").to_string();
+            let size_text = size_elem.text().collect::<Vec<_>>().join("").trim().to_string();
 
             if !download_link.is_empty() {
                 let full_url = format!("https://nyaa.si{}", download_link);
+                
+                // Parse and add size to total
+                if let Ok(size_bytes) = parse_size(&size_text) {
+                    let mut total = total_size_bytes.lock().unwrap();
+                    *total += size_bytes;
+                }
+                
                 torrents.push((full_url, title));
             }
         }
@@ -302,4 +316,43 @@ fn download_torrent(
     println!("Downloaded: {}", full_path);
 
     Ok(())
+}
+
+fn parse_size(size_str: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    let size_str = size_str.trim();
+    if size_str.is_empty() {
+        return Ok(0);
+    }
+
+    let parts: Vec<&str> = size_str.split_whitespace().collect();
+    if parts.len() != 2 {
+        return Err("Invalid size format".into());
+    }
+
+    let value: f64 = parts[0].parse()?;
+    let unit = parts[1].to_uppercase();
+
+    let multiplier = match unit.as_str() {
+        "B" => 1,
+        "KB" | "KIB" => 1024,
+        "MB" | "MIB" => 1024 * 1024,
+        "GB" | "GIB" => 1024 * 1024 * 1024,
+        "TB" | "TIB" => 1024u64 * 1024 * 1024 * 1024,
+        _ => return Err(format!("Unknown unit: {}", unit).into()),
+    };
+
+    Ok((value * multiplier as f64) as u64)
+}
+
+fn format_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut size = bytes as f64;
+    let mut unit_index = 0;
+
+    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_index += 1;
+    }
+
+    format!("{:.1} {}", size, UNITS[unit_index])
 }
