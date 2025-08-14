@@ -1,11 +1,17 @@
 # meow-rs
 
-A Rust implementation of the torrent scraper for nyaa.si.
+A [Rust implementation of the our](https://github.com/wotakumoe/meow) torrent scraper for nyaa.si.
 
 ## Usage
 
 ```bash
-cargo run -- <search_term>
+meow <search_term>
+```
+
+Or you can also pass a nyaa.si URL:
+
+```bash
+meow https://nyaa.si/search?q=<search_term>
 ```
 
 Or build and run the binary:
