@@ -1,3 +1,4 @@
+use once_cell::sync::Lazy;
 use rayon::prelude::*;
 use regex::Regex;
 use reqwest::blocking::Client;
@@ -5,8 +6,7 @@ use scraper::{Html, Selector};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
-use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 static FILENAME_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^\w\-_\. ]").unwrap());
 static URL_PART_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^\w\-_]").unwrap());
@@ -180,12 +180,12 @@ fn scrape_page_parallel(
 
             if !download_link.is_empty() {
                 let full_url = format!("https://nyaa.si{}", download_link);
-                
+
                 // Parse and add size to total
                 if let Ok(size_bytes) = parse_size(&size_text) {
                     total_size_bytes.fetch_add(size_bytes, Ordering::Relaxed);
                 }
-                
+
                 torrents.push((full_url, title));
             }
         }
@@ -204,7 +204,6 @@ fn scrape_page_parallel(
 
     Ok(downloads.load(Ordering::Relaxed))
 }
-
 
 fn create_directory_from_url(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     // Create base torrents directory
@@ -268,7 +267,6 @@ fn download_torrent_parallel(
 
     Ok(())
 }
-
 
 #[inline]
 fn parse_size(size_str: &str) -> Result<u64, Box<dyn std::error::Error>> {
