@@ -91,15 +91,20 @@ jobs:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
 
+    - name: Prepare release assets
+      run: |
+        mkdir -p release-assets
+        cp meow-rs-linux-x86_64/meow-rs release-assets/meow-rs-linux-x86_64
+        cp meow-rs-linux-x86_64-musl/meow-rs release-assets/meow-rs-linux-x86_64-musl
+        cp meow-rs-windows-x86_64.exe/meow-rs.exe release-assets/meow-rs-windows-x86_64.exe
+        cp meow-rs-macos-x86_64/meow-rs release-assets/meow-rs-macos-x86_64
+        cp meow-rs-macos-arm64/meow-rs release-assets/meow-rs-macos-arm64
+        ls -la release-assets/
+
     - name: Create release
       uses: softprops/action-gh-release@v1
       with:
-        files: |
-          meow-rs-linux-x86_64/meow-rs
-          meow-rs-linux-x86_64-musl/meow-rs
-          meow-rs-windows-x86_64.exe/meow-rs.exe
-          meow-rs-macos-x86_64/meow-rs
-          meow-rs-macos-arm64/meow-rs
+        files: release-assets/*
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
