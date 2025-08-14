@@ -4,7 +4,12 @@ use reqwest::blocking::Client;
 use scraper::{Html, Selector};
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
+use once_cell::sync::Lazy;
+
+static FILENAME_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^\w\-_\. ]").unwrap());
+static URL_PART_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^\w\-_]").unwrap());
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -45,11 +50,11 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("Discovered {} pages to scrape", pages.len());
 
     // Process pages in parallel
-    let total_downloaded = Arc::new(Mutex::new(0));
-    let total_size_bytes = Arc::new(Mutex::new(0u64));
+    let total_downloaded = Arc::new(AtomicUsize::new(0));
+    let total_size_bytes = Arc::new(AtomicU64::new(0));
 
     pages.par_iter().for_each(|page_num| {
-        let current_url = if base_url.contains("?") {
+        let current_url = if base_url.contains('?') {
             format!("{}&p={}", base_url, page_num)
         } else {
             format!("{}?p={}", base_url, page_num)
@@ -69,8 +74,7 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
                                     "Downloaded {} torrents from page {}",
                                     page_downloads, page_num
                                 );
-                                let mut total = total_downloaded.lock().unwrap();
-                                *total += page_downloads;
+                                total_downloaded.fetch_add(page_downloads, Ordering::Relaxed);
                             }
                         }
                         Err(e) => eprintln!("Error scraping page {}: {}", page_num, e),
@@ -82,13 +86,14 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let final_total = *total_downloaded.lock().unwrap();
-    let final_size_bytes = *total_size_bytes.lock().unwrap();
+    let final_total = total_downloaded.load(Ordering::Relaxed);
+    let final_size_bytes = total_size_bytes.load(Ordering::Relaxed);
     println!("Total torrents downloaded: {}", final_total);
     println!("total batch size: {}", format_size(final_size_bytes));
     Ok(())
 }
 
+#[inline]
 fn get_base_url_without_page(url: &str) -> String {
     // Remove existing page parameter if it exists
     let url_without_page = if url.contains("&p=") {
@@ -109,7 +114,7 @@ fn discover_all_pages(
     let mut page = 1;
 
     loop {
-        let current_url = if base_url.contains("?") {
+        let current_url = if base_url.contains('?') {
             format!("{}&p={}", base_url, page)
         } else {
             format!("{}?p={}", base_url, page)
@@ -149,7 +154,7 @@ fn scrape_page_parallel(
     document: &Html,
     client: &Arc<Client>,
     dir_name: &str,
-    total_size_bytes: &Arc<Mutex<u64>>,
+    total_size_bytes: &Arc<AtomicU64>,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let row_selector = Selector::parse("table tr, tbody tr").unwrap();
     let title_selector = Selector::parse("td:nth-child(2) a[title]:not(.comments)").unwrap();
@@ -157,7 +162,7 @@ fn scrape_page_parallel(
     let size_selector = Selector::parse("td:nth-child(4)").unwrap();
 
     // Collect all torrents from the page first
-    let mut torrents = Vec::new();
+    let mut torrents = Vec::with_capacity(100); // Pre-allocate reasonable capacity
 
     for row in document.select(&row_selector) {
         if let (Some(title_elem), Some(link_elem), Some(size_elem)) = (
@@ -171,15 +176,14 @@ fn scrape_page_parallel(
                 .unwrap_or("Unknown")
                 .to_string();
             let download_link = link_elem.value().attr("href").unwrap_or("").to_string();
-            let size_text = size_elem.text().collect::<Vec<_>>().join("").trim().to_string();
+            let size_text = size_elem.text().collect::<String>().trim().to_string();
 
             if !download_link.is_empty() {
                 let full_url = format!("https://nyaa.si{}", download_link);
                 
                 // Parse and add size to total
                 if let Ok(size_bytes) = parse_size(&size_text) {
-                    let mut total = total_size_bytes.lock().unwrap();
-                    *total += size_bytes;
+                    total_size_bytes.fetch_add(size_bytes, Ordering::Relaxed);
                 }
                 
                 torrents.push((full_url, title));
@@ -188,49 +192,19 @@ fn scrape_page_parallel(
     }
 
     // Download torrents in parallel
-    let downloads = Arc::new(Mutex::new(0));
+    let downloads = Arc::new(AtomicUsize::new(0));
 
     torrents.par_iter().for_each(|(url, title)| {
         if let Err(e) = download_torrent_parallel(url, title, dir_name, client) {
             eprintln!("Failed to download {}: {}", title, e);
         } else {
-            let mut count = downloads.lock().unwrap();
-            *count += 1;
+            downloads.fetch_add(1, Ordering::Relaxed);
         }
     });
 
-    Ok(*downloads.lock().unwrap())
+    Ok(downloads.load(Ordering::Relaxed))
 }
 
-fn scrape_page(
-    document: &Html,
-    _client: &Client,
-    dir_name: &str,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    let row_selector = Selector::parse("table tr, tbody tr")?;
-    let title_selector = Selector::parse("td:nth-child(2) a[title]:not(.comments)")?;
-    let link_selector = Selector::parse("td:nth-child(3) a[href^='/download/']")?;
-
-    let mut downloads = 0;
-
-    for row in document.select(&row_selector) {
-        if let (Some(title_elem), Some(link_elem)) = (
-            row.select(&title_selector).next(),
-            row.select(&link_selector).next(),
-        ) {
-            let title = title_elem.value().attr("title").unwrap_or("Unknown");
-            let download_link = link_elem.value().attr("href").unwrap_or("");
-
-            if !download_link.is_empty() {
-                let full_url = format!("https://nyaa.si{}", download_link);
-                download_torrent(&full_url, title, &dir_name)?;
-                downloads += 1;
-            }
-        }
-    }
-
-    Ok(downloads)
-}
 
 fn create_directory_from_url(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     // Create base torrents directory
@@ -264,8 +238,7 @@ fn create_directory_from_url(url: &str) -> Result<String, Box<dyn std::error::Er
     };
 
     // Clean directory name
-    let re = Regex::new(r"[^\w\-_]")?;
-    let clean_name = re.replace_all(&url_part, "_").to_string();
+    let clean_name = URL_PART_REGEX.replace_all(&url_part, "_").to_string();
     let dir_path = format!("{}/{}", base_dir, clean_name);
 
     // Create the directory
@@ -286,8 +259,7 @@ fn download_torrent_parallel(
     let content = response.bytes()?;
 
     // Clean filename
-    let re = Regex::new(r"[^\w\-_\. ]")?;
-    let clean_title = re.replace_all(title, "").to_string();
+    let clean_title = FILENAME_REGEX.replace_all(title, "").to_string();
     let filename = format!("{}.torrent", clean_title.trim());
     let full_path = format!("{}/{}", dir_path, filename);
 
@@ -297,27 +269,8 @@ fn download_torrent_parallel(
     Ok(())
 }
 
-fn download_torrent(
-    url: &str,
-    title: &str,
-    dir_path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new();
-    let response = client.get(url).send()?;
-    let content = response.bytes()?;
 
-    // Clean filename
-    let re = Regex::new(r"[^\w\-_\. ]")?;
-    let clean_title = re.replace_all(title, "").to_string();
-    let filename = format!("{}.torrent", clean_title.trim());
-    let full_path = format!("{}/{}", dir_path, filename);
-
-    fs::write(&full_path, &content)?;
-    println!("Downloaded: {}", full_path);
-
-    Ok(())
-}
-
+#[inline]
 fn parse_size(size_str: &str) -> Result<u64, Box<dyn std::error::Error>> {
     let size_str = size_str.trim();
     if size_str.is_empty() {
@@ -344,6 +297,7 @@ fn parse_size(size_str: &str) -> Result<u64, Box<dyn std::error::Error>> {
     Ok((value * multiplier as f64) as u64)
 }
 
+#[inline]
 fn format_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut size = bytes as f64;
