@@ -6,10 +6,14 @@ use scraper::{Html, Selector};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 static FILENAME_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^\w\-_\. ]").unwrap());
 static URL_PART_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^\w\-_]").unwrap());
+
+static RATE_LIMITER: Lazy<Mutex<Instant>> = Lazy::new(|| Mutex::new(Instant::now()));
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -62,7 +66,7 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
 
         println!("Scraping page {}: {}", page_num, current_url);
 
-        match client.get(&current_url).send() {
+        match make_request_with_retry(&client, &current_url) {
             Ok(response) => match response.text() {
                 Ok(html_content) => {
                     let document = Html::parse_document(&html_content);
@@ -120,7 +124,7 @@ fn discover_all_pages(
             format!("{}?p={}", base_url, page)
         };
 
-        let response = client.get(&current_url).send()?;
+        let response = make_request_with_retry(client, &current_url)?;
         let html_content = response.text()?;
         let document = Html::parse_document(&html_content);
 
@@ -254,7 +258,7 @@ fn download_torrent_parallel(
     dir_path: &str,
     client: &Arc<Client>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let response = client.get(url).send()?;
+    let response = make_request_with_retry(client, url)?;
     let content = response.bytes()?;
 
     // Clean filename
@@ -307,4 +311,62 @@ fn format_size(bytes: u64) -> String {
     }
 
     format!("{:.1} {}", size, UNITS[unit_index])
+}
+
+fn rate_limit() {
+    let min_interval = Duration::from_millis(500);
+    let mut last_request = RATE_LIMITER.lock().unwrap();
+    let elapsed = last_request.elapsed();
+
+    if elapsed < min_interval {
+        let sleep_duration = min_interval - elapsed;
+        std::thread::sleep(sleep_duration);
+    }
+
+    *last_request = Instant::now();
+}
+
+fn make_request_with_retry(
+    client: &Client,
+    url: &str,
+) -> Result<reqwest::blocking::Response, Box<dyn std::error::Error>> {
+    let max_retries = 3;
+    let mut retry_count = 0;
+
+    loop {
+        rate_limit();
+
+        match client.get(url).send() {
+            Ok(response) => {
+                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    retry_count += 1;
+                    if retry_count >= max_retries {
+                        return Err(format!(
+                            "Too many requests after {} retries for URL: {}",
+                            max_retries, url
+                        )
+                        .into());
+                    }
+
+                    let retry_delay = Duration::from_secs(2u64.pow(retry_count));
+                    eprintln!(
+                        "Rate limited (429), retrying in {:?} for URL: {}",
+                        retry_delay, url
+                    );
+                    std::thread::sleep(retry_delay);
+                    continue;
+                }
+                return Ok(response);
+            }
+            Err(e) => {
+                if retry_count >= max_retries {
+                    return Err(e.into());
+                }
+                retry_count += 1;
+                let retry_delay = Duration::from_millis(500 * retry_count as u64);
+                eprintln!("Request failed, retrying in {:?}: {}", retry_delay, e);
+                std::thread::sleep(retry_delay);
+            }
+        }
+    }
 }
