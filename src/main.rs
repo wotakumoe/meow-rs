@@ -94,6 +94,10 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let final_size_bytes = total_size_bytes.load(Ordering::Relaxed);
     println!("Total torrents downloaded: {}", final_total);
     println!("total batch size: {}", format_size(final_size_bytes));
+    
+    println!("\nCheckout https://wotaku.wiki for more awesome content!");
+    println!("⭐ Star the repo: https://github.com/wotakumoe/wotaku");
+    
     Ok(())
 }
 
