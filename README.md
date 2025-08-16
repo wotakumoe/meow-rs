@@ -1,35 +1,43 @@
 # meow-rs
 
-A [Rust implementation of the our](https://github.com/wotakumoe/meow) torrent scraper for nyaa.si.
+A [Rust implementation of our](https://github.com/wotakumoe/meow) torrent scraper for nyaa.si.
 
 ## Usage
 
 ```bash
-meow <search_term>
+meow-rs <search_term_or_url>
 ```
 
-Or you can also pass a nyaa.si URL:
+You can pass either a search term or a nyaa.si URL:
 
 ```bash
-meow https://nyaa.si/search?q=<search_term>
+# Search for torrents
+meow-rs "anime name"
+
+# Use a direct nyaa.si URL
+meow-rs "https://nyaa.si/?f=0&c=0_0&q=anime"
 ```
 
 Or build and run the binary:
 
 ```bash
 cargo build --release
-./target/release/meow-rs <search_term>
+./target/release/meow-rs <search_term_or_url>
 ```
 
 ## Features
 
 - Scrapes nyaa.si for torrents matching the search term
+- **Multi-page discovery**: Automatically discovers and scrapes all available pages
+- **Parallel processing**: Downloads torrents from multiple pages simultaneously using Rayon
+- **Rate limiting**: Built-in rate limiting to prevent overwhelming the server (500ms between requests)
+- **Retry logic**: Automatic retry with exponential backoff for failed requests
+- **Directory organization**: Creates organized directory structure based on search terms or URLs
+- **Size tracking**: Displays total batch size of downloaded torrents
 - Downloads .torrent files with cleaned filenames
-- Minimal dependencies and fast execution
+- Fast execution with minimal memory usage
 
-## Dependencies
+## Releases
 
-- `reqwest` - HTTP client for web scraping and downloading
-- `scraper` - HTML parsing and CSS selector support
-- `regex` - Pattern matching for filename cleaning
-- `urlencoding` - URL encoding for search terms
+Pre-built binaries are available for download from the [releases page](https://github.com/wotakumoe/meow-rs/releases).
+
