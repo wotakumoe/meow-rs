@@ -31,7 +31,7 @@ struct TorrentInfo {
 #[derive(Serialize, Deserialize, Default, Debug)]
 struct DownloadState {
     downloaded_torrents: HashMap<String, TorrentInfo>, // filename -> info
-    processed_pages: HashMap<String, HashSet<i32>>, // base_url -> set of page numbers
+    processed_pages: HashMap<String, HashSet<i32>>,    // base_url -> set of page numbers
     last_update: u64,
 }
 
@@ -39,12 +39,10 @@ impl DownloadState {
     fn load_from_file(state_file: &str) -> Self {
         if Path::new(state_file).exists() {
             match fs::read_to_string(state_file) {
-                Ok(content) => {
-                    match serde_json::from_str(&content) {
-                        Ok(state) => return state,
-                        Err(e) => eprintln!("Warning: Failed to parse state file: {}", e),
-                    }
-                }
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(state) => return state,
+                    Err(e) => eprintln!("Warning: Failed to parse state file: {}", e),
+                },
                 Err(e) => eprintln!("Warning: Failed to read state file: {}", e),
             }
         }
@@ -77,13 +75,13 @@ impl DownloadState {
     fn has_processed_page(&self, base_url: &str, page: i32) -> bool {
         self.processed_pages
             .get(base_url)
-            .map_or(false, |pages| pages.contains(&page))
+            .is_some_and(|pages| pages.contains(&page))
     }
 
     fn mark_page_processed(&mut self, base_url: String, page: i32) {
         self.processed_pages
             .entry(base_url)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(page);
     }
 }
@@ -118,9 +116,11 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Load download state
     let state_file = format!("{}/download_state.json", dir_name);
     let mut download_state = DownloadState::load_from_file(&state_file);
-    
-    println!("Loaded state: {} previously downloaded torrents", 
-             download_state.downloaded_torrents.len());
+
+    println!(
+        "Loaded state: {} previously downloaded torrents",
+        download_state.downloaded_torrents.len()
+    );
 
     let client = Arc::new(Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
@@ -144,20 +144,26 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!("All pages have been processed. Checking for updates on recent pages...");
         // Check the first few pages for new content
         let recent_pages: Vec<i32> = pages.iter().take(3).copied().collect();
-        download_state.processed_pages.get_mut(&base_url).map(|set| {
-            for &page in &recent_pages {
-                set.remove(&page);
-            }
-        });
+        download_state
+            .processed_pages
+            .get_mut(&base_url)
+            .map(|set| {
+                for &page in &recent_pages {
+                    set.remove(&page);
+                }
+            });
     }
 
-    let pages_to_process = if unprocessed_pages.is_empty() { 
-        pages.iter().take(3).copied().collect() 
-    } else { 
-        unprocessed_pages 
+    let pages_to_process = if unprocessed_pages.is_empty() {
+        pages.iter().take(3).copied().collect()
+    } else {
+        unprocessed_pages
     };
 
-    println!("Processing {} pages (new or recent)", pages_to_process.len());
+    println!(
+        "Processing {} pages (new or recent)",
+        pages_to_process.len()
+    );
 
     // Process pages in parallel with shared state
     let total_downloaded = Arc::new(AtomicUsize::new(0));
@@ -179,13 +185,13 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
                     let document = Html::parse_document(&html_content);
 
                     match scrape_page_with_state(
-                        &document, 
-                        &client, 
-                        &dir_name, 
+                        &document,
+                        &client,
+                        &dir_name,
                         &total_size_bytes,
                         &state_mutex,
                         &base_url,
-                        *page_num
+                        *page_num,
                     ) {
                         Ok(page_downloads) => {
                             if page_downloads > 0 {
@@ -217,11 +223,14 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let final_size_bytes = total_size_bytes.load(Ordering::Relaxed);
     println!("New torrents downloaded: {}", final_total);
     println!("Total downloaded size: {}", format_size(final_size_bytes));
-    println!("Total tracked torrents: {}", final_state.downloaded_torrents.len());
-    
+    println!(
+        "Total tracked torrents: {}",
+        final_state.downloaded_torrents.len()
+    );
+
     println!("\nCheckout https://wotaku.wiki for more awesome content!");
     println!("⭐ Star the repo: https://github.com/wotakumoe/wotaku");
-    
+
     Ok(())
 }
 
@@ -339,30 +348,32 @@ fn scrape_page_with_state(
     // Download torrents in parallel
     let downloads = Arc::new(AtomicUsize::new(0));
 
-    torrents_to_download.par_iter().for_each(|(url, title, filename, size_text)| {
-        match download_torrent_with_state(url, title, filename, dir_name, client) {
-            Ok(content_hash) => {
-                // Update state
-                {
-                    let mut state = state_mutex.lock().unwrap();
-                    let torrent_info = TorrentInfo {
-                        title: title.clone(),
-                        download_url: url.clone(),
-                        size_text: size_text.clone(),
-                        filename: filename.clone(),
-                        content_hash: Some(content_hash),
-                        downloaded_at: SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                    };
-                    state.mark_torrent_downloaded(filename.clone(), torrent_info);
+    torrents_to_download
+        .par_iter()
+        .for_each(|(url, title, filename, size_text)| {
+            match download_torrent_with_state(url, title, filename, dir_name, client) {
+                Ok(content_hash) => {
+                    // Update state
+                    {
+                        let mut state = state_mutex.lock().unwrap();
+                        let torrent_info = TorrentInfo {
+                            title: title.clone(),
+                            download_url: url.clone(),
+                            size_text: size_text.clone(),
+                            filename: filename.clone(),
+                            content_hash: Some(content_hash),
+                            downloaded_at: SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        };
+                        state.mark_torrent_downloaded(filename.clone(), torrent_info);
+                    }
+                    downloads.fetch_add(1, Ordering::Relaxed);
                 }
-                downloads.fetch_add(1, Ordering::Relaxed);
+                Err(e) => eprintln!("Failed to download {}: {}", title, e),
             }
-            Err(e) => eprintln!("Failed to download {}: {}", title, e),
-        }
-    });
+        });
 
     // Mark page as processed
     {

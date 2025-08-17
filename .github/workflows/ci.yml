@@ -16,6 +16,8 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
+    - name: Install mold linker
+      run: sudo apt-get update && sudo apt-get install -y mold
     - name: Run tests
       run: cargo test --verbose
 
@@ -27,6 +29,8 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy
+    - name: Install mold linker
+      run: sudo apt-get update && sudo apt-get install -y mold
     - name: Run clippy
       run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -50,5 +54,8 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
+    - name: Install mold linker (Ubuntu only)
+      if: matrix.os == 'ubuntu-latest'
+      run: sudo apt-get update && sudo apt-get install -y mold
     - name: Build
       run: cargo build --verbose
