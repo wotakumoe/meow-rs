@@ -144,14 +144,11 @@ fn scrape_torrents(url: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!("All pages have been processed. Checking for updates on recent pages...");
         // Check the first few pages for new content
         let recent_pages: Vec<i32> = pages.iter().take(3).copied().collect();
-        download_state
-            .processed_pages
-            .get_mut(&base_url)
-            .map(|set| {
-                for &page in &recent_pages {
-                    set.remove(&page);
-                }
-            });
+        if let Some(set) = download_state.processed_pages.get_mut(&base_url) {
+            for &page in &recent_pages {
+                set.remove(&page);
+            }
+        }
     }
 
     let pages_to_process = if unprocessed_pages.is_empty() {
