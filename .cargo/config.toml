@@ -1,5 +1,6 @@
-[build]
-rustflags = ["-Ctarget-cpu=native"]
+# SEE: https://github.com/briansmith/ring/discussions/2528
+# [build]
+# rustflags = ["-Ctarget-cpu=native"]
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-Clink-arg=-fuse-ld=mold", "-Ctarget-cpu=native"]
